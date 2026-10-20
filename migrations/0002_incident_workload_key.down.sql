@@ -1,0 +1,1 @@
+DROP INDEX incidents_workload_key_idx;

@@ -1,0 +1,23 @@
+# Failure simulation (rule D): a busy loop under a tiny CPU limit, so the kernel
+# throttles it in almost every scheduling period. The 20m limit keeps the real
+# CPU cost on the node negligible. Needs Prometheus (make monitoring-up).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpu-throttle
+  namespace: kubesentinel-sim
+  labels: { app: cpu-throttle, kubesentinel.io/scenario: cpu-throttling }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: cpu-throttle } }
+  template:
+    metadata:
+      labels: { app: cpu-throttle, kubesentinel.io/scenario: cpu-throttling }
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.37
+          command: ["sh", "-c", "while :; do :; done"]
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 20m, memory: 32Mi }

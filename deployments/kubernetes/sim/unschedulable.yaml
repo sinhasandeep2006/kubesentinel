@@ -1,0 +1,22 @@
+# Failure simulation (rule F): requests far more memory than any node has, so it stays Pending.
+# Nothing is ever allocated; the scheduler simply refuses to place it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: unschedulable
+  namespace: kubesentinel-sim
+  labels: { app: unschedulable, kubesentinel.io/scenario: scheduling }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: unschedulable } }
+  template:
+    metadata:
+      labels: { app: unschedulable, kubesentinel.io/scenario: scheduling }
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.37
+          command: ["sleep", "infinity"]
+          resources:
+            requests: { cpu: 10m, memory: 4Ti }
+            limits: { cpu: 50m, memory: 4Ti }

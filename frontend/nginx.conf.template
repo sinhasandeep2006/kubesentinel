@@ -1,0 +1,14 @@
+server {
+    listen 80;
+    root /usr/share/nginx/html;
+
+    # The browser only talks to this server; nginx forwards API calls to the backend.
+    location /api/ {
+        proxy_pass ${KS_API_URL};
+    }
+
+    # Client-side routes (e.g. /incidents/3) fall back to the app.
+    location / {
+        try_files $uri /index.html;
+    }
+}

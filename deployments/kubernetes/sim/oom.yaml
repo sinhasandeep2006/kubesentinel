@@ -1,0 +1,22 @@
+# Failure simulation (rule C): allocates memory past its 32Mi limit and is OOMKilled.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oom
+  namespace: kubesentinel-sim
+  labels: { app: oom, kubesentinel.io/scenario: memory-exhaustion }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: oom } }
+  template:
+    metadata:
+      labels: { app: oom, kubesentinel.io/scenario: memory-exhaustion }
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.37
+          # Holds an ever-growing string in shell memory until the kernel kills it.
+          command: ["sh", "-c", "echo allocating; x=a; while true; do x=$x$x; done"]
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 100m, memory: 32Mi }

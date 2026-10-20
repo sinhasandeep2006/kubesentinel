@@ -1,0 +1,20 @@
+# Failure simulation (rule H): the image tag does not exist, so the pull fails forever.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bad-image
+  namespace: kubesentinel-sim
+  labels: { app: bad-image, kubesentinel.io/scenario: image-pull }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: bad-image } }
+  template:
+    metadata:
+      labels: { app: bad-image, kubesentinel.io/scenario: image-pull }
+    spec:
+      containers:
+        - name: app
+          image: busybox:kubesentinel-does-not-exist
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 50m, memory: 32Mi }

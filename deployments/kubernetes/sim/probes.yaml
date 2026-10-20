@@ -1,0 +1,52 @@
+# Failure simulations (rule E). Readiness and liveness are deliberately separate:
+# - not-ready: readiness probe always fails -> pod runs but never receives traffic, no restarts.
+# - liveness-fail: liveness probe always fails -> kubelet kills and restarts the container.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: not-ready
+  namespace: kubesentinel-sim
+  labels: { app: not-ready, kubesentinel.io/scenario: readiness-probe }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: not-ready } }
+  template:
+    metadata:
+      labels: { app: not-ready, kubesentinel.io/scenario: readiness-probe }
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.37
+          command: ["sleep", "infinity"]
+          readinessProbe:
+            exec: { command: ["cat", "/tmp/healthy"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 50m, memory: 32Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: liveness-fail
+  namespace: kubesentinel-sim
+  labels: { app: liveness-fail, kubesentinel.io/scenario: liveness-probe }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: liveness-fail } }
+  template:
+    metadata:
+      labels: { app: liveness-fail, kubesentinel.io/scenario: liveness-probe }
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.37
+          command: ["sleep", "infinity"]
+          livenessProbe:
+            exec: { command: ["cat", "/tmp/alive"] }
+            initialDelaySeconds: 2
+            periodSeconds: 3
+            failureThreshold: 2
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 50m, memory: 32Mi }

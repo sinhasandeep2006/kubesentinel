@@ -1,0 +1,35 @@
+# Failure simulation: a container that exits with code 1 every ~5s.
+# Scenario A (repeated restarts) / B (CrashLoopBackOff). Disposable: `make sim-down`.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubesentinel-sim
+  labels:
+    app.kubernetes.io/part-of: kubesentinel-sim
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crashloop
+  namespace: kubesentinel-sim
+  labels:
+    app: crashloop
+    kubesentinel.io/scenario: repeated-restarts
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: crashloop
+  template:
+    metadata:
+      labels:
+        app: crashloop
+        kubesentinel.io/scenario: repeated-restarts
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.37
+          command: ["sh", "-c", "echo 'starting'; sleep 5; echo 'fatal: simulated failure' >&2; exit 1"]
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 50m, memory: 32Mi }

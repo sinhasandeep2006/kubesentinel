@@ -1,0 +1,43 @@
+# Failure simulation: crashes 4 times, then stays up in the same pod.
+# The attempt counter lives in an emptyDir, which survives container restarts.
+# Exercises detection → diagnosis → verified self-recovery → resolved.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flaky-start
+  namespace: kubesentinel-sim
+  labels:
+    app: flaky-start
+    kubesentinel.io/scenario: self-recovery
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flaky-start
+  template:
+    metadata:
+      labels:
+        app: flaky-start
+        kubesentinel.io/scenario: self-recovery
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              n=$(cat /state/attempts 2>/dev/null || echo 0); n=$((n+1)); echo $n > /state/attempts
+              if [ "$n" -le 4 ]; then echo "error: dependency not ready (attempt $n)" >&2; sleep 3; exit 1; fi
+              echo "started after $n attempts"; touch /tmp/ready; sleep infinity
+          readinessProbe:
+            exec: { command: ["cat", "/tmp/ready"] }
+            periodSeconds: 5
+          volumeMounts:
+            - { name: state, mountPath: /state }
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 50m, memory: 32Mi }
+      volumes:
+        - name: state
+          emptyDir: {}

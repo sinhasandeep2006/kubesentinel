@@ -1,0 +1,225 @@
+package incident
+
+import (
+	"context"
+	"slices"
+	"testing"
+	"time"
+
+	"github.com/sinhasandeep2006/kubesentinel/internal/detector"
+)
+
+type memStore struct {
+	incs   []*Incident
+	trans  []Transition
+	ev     []Evidence
+	hyps   map[int64][]Hypothesis
+	verifs []Verification
+	props  []Proposal
+}
+
+func (s *memStore) LatestIncident(_ context.Context, k Key) (*Incident, error) {
+	for i := len(s.incs) - 1; i >= 0; i-- {
+		if inc := s.incs[i]; inc.Key() == k && inc.Status != StatusDismissed {
+			c := *inc
+			return &c, nil
+		}
+	}
+	return nil, nil
+}
+func (s *memStore) CreateIncident(_ context.Context, inc *Incident) error {
+	inc.ID = int64(len(s.incs) + 1)
+	inc.Status = StatusDetected
+	c := *inc
+	s.incs = append(s.incs, &c)
+	s.trans = append(s.trans, Transition{IncidentID: inc.ID, To: StatusDetected})
+	return nil
+}
+func (s *memStore) Transition(_ context.Context, id int64, from, to Status, reason string, at time.Time) error {
+	if err := CheckTransition(from, to); err != nil {
+		return err
+	}
+	s.incs[id-1].Status = to
+	s.trans = append(s.trans, Transition{IncidentID: id, From: from, To: to, Reason: reason, At: at})
+	return nil
+}
+func (s *memStore) AddEvidence(_ context.Context, id int64, ev []Evidence) ([]Evidence, error) {
+	for i := range ev {
+		ev[i].ID = int64(len(s.ev) + 1)
+		ev[i].IncidentID = id
+		s.ev = append(s.ev, ev[i])
+	}
+	return ev, nil
+}
+func (s *memStore) ListEvidence(_ context.Context, id int64) ([]Evidence, error) {
+	var out []Evidence
+	for _, e := range s.ev {
+		if e.IncidentID == id {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+func (s *memStore) ReplaceHypotheses(_ context.Context, id int64, hs []Hypothesis) ([]Hypothesis, error) {
+	if s.hyps == nil {
+		s.hyps = map[int64][]Hypothesis{}
+	}
+	for i := range hs {
+		hs[i].ID = int64(i + 1)
+	}
+	s.hyps[id] = hs
+	return hs, nil
+}
+func (s *memStore) ReplaceProposals(_ context.Context, id int64, ps []Proposal) error {
+	s.props = ps
+	return nil
+}
+func (s *memStore) AddVerification(_ context.Context, v *Verification) error {
+	s.verifs = append(s.verifs, *v)
+	return nil
+}
+func (s *memStore) OpenIncidents(context.Context) ([]Incident, error) {
+	var out []Incident
+	for _, inc := range s.incs {
+		if inc.Status.Open() {
+			out = append(out, *inc)
+		}
+	}
+	return out, nil
+}
+
+type fakeCollector struct{}
+
+func (fakeCollector) Collect(context.Context, detector.Signal) []Evidence {
+	return []Evidence{{Type: EvidenceTermination, Availability: Available}}
+}
+
+type fakeDiagnoser struct{}
+
+func (fakeDiagnoser) Diagnose(Incident, []Evidence) []Hypothesis {
+	return []Hypothesis{{Rank: 1, Title: "x"}}
+}
+
+type fakePlanner struct{}
+
+func (fakePlanner) Plan(_ Incident, hs []Hypothesis) []Proposal {
+	return []Proposal{{HypothesisID: &hs[0].ID, Mode: ModeSuggestionOnly}}
+}
+
+type fakeVerifier struct{ outcome Outcome }
+
+func (f *fakeVerifier) VerifyWorkload(context.Context, Incident) Verification {
+	return Verification{Outcome: f.outcome}
+}
+
+func trigger(pod string) detector.Signal {
+	return detector.Signal{Kind: detector.SignalTriggered, Detector: "repeated-restarts", Namespace: "sim",
+		WorkloadKind: "Deployment", WorkloadName: "web", Pod: pod, PodUID: "uid-" + pod, Container: "app"}
+}
+
+func statuses(s *memStore) []Status {
+	var out []Status
+	for _, t := range s.trans {
+		out = append(out, t.To)
+	}
+	return out
+}
+
+// step is either a signal (pod != "") or a reconcile pass with the given verification outcome.
+type step struct {
+	pod    string
+	verify Outcome
+}
+
+func TestManagerLifecycle(t *testing.T) {
+	diagnosed := []Status{StatusDetected, StatusInvestigating, StatusDiagnosed}
+	tests := []struct {
+		name       string
+		steps      []step
+		want       []Status
+		wantVerifs int
+	}{
+		{
+			name:  "trigger is investigated and diagnosed",
+			steps: []step{{pod: "a"}},
+			want:  diagnosed,
+		},
+		{
+			name:       "passed verification resolves",
+			steps:      []step{{pod: "a"}, {verify: OutcomePassed}},
+			want:       append(diagnosed, StatusVerifying, StatusResolved),
+			wantVerifs: 1,
+		},
+		{
+			name:  "failed verification never resolves and is not stored",
+			steps: []step{{pod: "a"}, {verify: OutcomeFailed}, {verify: OutcomeFailed}},
+			want:  diagnosed,
+		},
+		{
+			name:  "replacement pod of the same workload joins the open incident",
+			steps: []step{{pod: "a"}, {pod: "b"}},
+			want:  diagnosed,
+		},
+		{
+			name:       "rollout then healthy replacement resolves",
+			steps:      []step{{pod: "a"}, {verify: OutcomeFailed}, {verify: OutcomePassed}},
+			want:       append(diagnosed, StatusVerifying, StatusResolved),
+			wantVerifs: 1,
+		},
+		{
+			name:  "recurrence reopens",
+			steps: []step{{pod: "a"}, {verify: OutcomePassed}, {pod: "b"}},
+			want: append(diagnosed, StatusVerifying, StatusResolved,
+				StatusReopened, StatusInvestigating, StatusDiagnosed),
+			wantVerifs: 1,
+		},
+		{
+			name:       "workload with no pods is dismissed, not resolved",
+			steps:      []step{{pod: "a"}, {verify: OutcomeInconclusive}},
+			want:       append(diagnosed, StatusDismissed),
+			wantVerifs: 1,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &memStore{}
+			v := &fakeVerifier{}
+			m := NewManager(s, fakeCollector{}, fakeDiagnoser{}, fakePlanner{}, v)
+			ctx := context.Background()
+			for i, st := range tc.steps {
+				var err error
+				if st.pod != "" {
+					err = m.process(ctx, trigger(st.pod))
+				} else {
+					v.outcome = st.verify
+					err = m.Reconcile(ctx)
+				}
+				if err != nil {
+					t.Fatalf("step %d: %v", i, err)
+				}
+			}
+			if got := statuses(s); !slices.Equal(got, tc.want) {
+				t.Errorf("transitions = %v, want %v", got, tc.want)
+			}
+			if len(s.verifs) != tc.wantVerifs {
+				t.Errorf("stored verifications = %d, want %d", len(s.verifs), tc.wantVerifs)
+			}
+			if len(s.props) != 1 || *s.props[0].HypothesisID != 1 {
+				t.Errorf("proposals not stored or not linked to hypothesis IDs: %+v", s.props)
+			}
+			if len(s.incs) > 1 {
+				t.Errorf("got %d incidents, want 1 (keyed by workload)", len(s.incs))
+			}
+		})
+	}
+}
+
+func TestRecoverySignalIsIgnored(t *testing.T) {
+	s := &memStore{}
+	m := NewManager(s, fakeCollector{}, fakeDiagnoser{}, fakePlanner{}, &fakeVerifier{})
+	sig := trigger("a")
+	sig.Kind = detector.SignalRecovered
+	if err := m.process(context.Background(), sig); err != nil || len(s.trans) != 0 {
+		t.Errorf("err=%v transitions=%v", err, s.trans)
+	}
+}
